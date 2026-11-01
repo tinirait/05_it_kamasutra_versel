@@ -1,16 +1,20 @@
 const express = require("express");
+const crypto = require("crypto");
 
 const app = express();
 app.use(express.json());
 
-const db = { blogs: [], posts: [] };
+const db = { blogs: [], posts: [], users: [] };
 let blogIdCounter = 1;
 let postIdCounter = 1;
+let userIdCounter = 1;
 const ADMIN_LOGIN = process.env.ADMIN_LOGIN || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "qwerty";
 
 const createErrorsMessages = (errors) => ({ errorsMessages: errors });
 const SORT_DIRECTIONS = new Set(["asc", "desc"]);
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const LOGIN_REGEX = /^[a-zA-Z0-9_-]*$/;
 
 const toPositiveInt = (value, defaultValue) => {
   const parsed = Number.parseInt(value, 10);
@@ -53,6 +57,8 @@ const toPaginator = (allItems, pageNumber, pageSize) => {
     items,
   };
 };
+
+const createPasswordHash = (password) => crypto.createHash("sha256").update(password, "utf8").digest("hex");
 
 const isHttpsUrl = (value) => {
   try {
@@ -149,6 +155,44 @@ const validatePostBodyWithoutBlogId = (req, res, next) => {
   }
   if (typeof req.body.content !== "string" || req.body.content.trim().length < 1 || req.body.content.trim().length > 1000) {
     errors.push({ message: "Invalid content", field: "content" });
+  }
+  if (errors.length) {
+    res.status(400).send(createErrorsMessages(errors));
+    return;
+  }
+  next();
+};
+
+const validateUserBody = (req, res, next) => {
+  const errors = [];
+  if (
+    typeof req.body.login !== "string" ||
+    req.body.login.trim().length < 3 ||
+    req.body.login.trim().length > 10 ||
+    !LOGIN_REGEX.test(req.body.login.trim())
+  ) {
+    errors.push({ message: "Invalid login", field: "login" });
+  }
+  if (typeof req.body.password !== "string" || req.body.password.trim().length < 6 || req.body.password.trim().length > 20) {
+    errors.push({ message: "Invalid password", field: "password" });
+  }
+  if (typeof req.body.email !== "string" || !EMAIL_REGEX.test(req.body.email.trim())) {
+    errors.push({ message: "Invalid email", field: "email" });
+  }
+  if (errors.length) {
+    res.status(400).send(createErrorsMessages(errors));
+    return;
+  }
+  next();
+};
+
+const validateLoginBody = (req, res, next) => {
+  const errors = [];
+  if (typeof req.body.loginOrEmail !== "string" || req.body.loginOrEmail.trim().length < 1) {
+    errors.push({ message: "Invalid loginOrEmail", field: "loginOrEmail" });
+  }
+  if (typeof req.body.password !== "string" || req.body.password.trim().length < 1) {
+    errors.push({ message: "Invalid password", field: "password" });
   }
   if (errors.length) {
     res.status(400).send(createErrorsMessages(errors));
@@ -280,11 +324,84 @@ router.delete("/posts/:id", requireAdminAuth, (req, res) => {
   res.sendStatus(204);
 });
 
+router.get("/users", requireAdminAuth, (req, res) => {
+  const { pageNumber, pageSize, sortBy, sortDirection } = getPaginationParams(req.query);
+  const searchLoginTerm = typeof req.query.searchLoginTerm === "string" ? req.query.searchLoginTerm.trim().toLowerCase() : null;
+  const searchEmailTerm = typeof req.query.searchEmailTerm === "string" ? req.query.searchEmailTerm.trim().toLowerCase() : null;
+
+  const filtered = db.users.filter((user) => {
+    if (!searchLoginTerm && !searchEmailTerm) return true;
+    const byLogin = searchLoginTerm ? user.login.toLowerCase().includes(searchLoginTerm) : false;
+    const byEmail = searchEmailTerm ? user.email.toLowerCase().includes(searchEmailTerm) : false;
+    return byLogin || byEmail;
+  });
+
+  const sorted = sortItems(filtered, sortBy, sortDirection);
+  const paginated = toPaginator(sorted, pageNumber, pageSize);
+  res.status(200).send({
+    ...paginated,
+    items: paginated.items.map((user) => ({
+      id: user.id,
+      login: user.login,
+      email: user.email,
+      createdAt: user.createdAt,
+    })),
+  });
+});
+
+router.post("/users", requireAdminAuth, validateUserBody, (req, res) => {
+  const login = req.body.login.trim();
+  const email = req.body.email.trim();
+  const normalizedEmail = email.toLowerCase();
+
+  if (db.users.some((user) => user.login.toLowerCase() === login.toLowerCase())) {
+    return res.status(400).send(createErrorsMessages([{ field: "login", message: "login should be unique" }]));
+  }
+  if (db.users.some((user) => user.email.toLowerCase() === normalizedEmail)) {
+    return res.status(400).send(createErrorsMessages([{ field: "email", message: "email should be unique" }]));
+  }
+
+  const user = {
+    id: String(userIdCounter++),
+    login,
+    email,
+    passwordHash: createPasswordHash(req.body.password),
+    createdAt: new Date().toISOString(),
+  };
+  db.users.push(user);
+  res.status(201).send({
+    id: user.id,
+    login: user.login,
+    email: user.email,
+    createdAt: user.createdAt,
+  });
+});
+
+router.delete("/users/:id", requireAdminAuth, (req, res) => {
+  const userIndex = db.users.findIndex((user) => user.id === req.params.id);
+  if (userIndex === -1) return res.sendStatus(404);
+  db.users.splice(userIndex, 1);
+  res.sendStatus(204);
+});
+
+router.post("/auth/login", validateLoginBody, (req, res) => {
+  const loginOrEmail = req.body.loginOrEmail.trim().toLowerCase();
+  const passwordHash = createPasswordHash(req.body.password);
+
+  const user = db.users.find(
+    (item) => item.login.toLowerCase() === loginOrEmail || item.email.toLowerCase() === loginOrEmail,
+  );
+  if (!user || user.passwordHash !== passwordHash) return res.sendStatus(401);
+  return res.sendStatus(204);
+});
+
 router.delete("/testing/all-data", (req, res) => {
   db.blogs = [];
   db.posts = [];
+  db.users = [];
   blogIdCounter = 1;
   postIdCounter = 1;
+  userIdCounter = 1;
   res.sendStatus(204);
 });
 
@@ -292,6 +409,7 @@ app.get("/", (req, res) => res.status(200).send("Hello world!"));
 app.get("/health", (req, res) => res.status(200).send({ status: "ok" }));
 app.use("/hometask_03/api", router);
 app.use("/hometask_04/api", router);
+app.use("/hometask_05/api", router);
 app.use("", router);
 
 module.exports = app;
