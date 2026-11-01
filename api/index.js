@@ -6,6 +6,8 @@ app.use(express.json());
 const db = { blogs: [], posts: [] };
 let blogIdCounter = 1;
 let postIdCounter = 1;
+const ADMIN_LOGIN = process.env.ADMIN_LOGIN || "admin";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "qwerty";
 
 const createErrorsMessages = (errors) => ({ errorsMessages: errors });
 const SORT_DIRECTIONS = new Set(["asc", "desc"]);
@@ -74,7 +76,7 @@ const getBasicAuthCredentials = (authHeader) => {
 
 const requireAdminAuth = (req, res, next) => {
   const credentials = getBasicAuthCredentials(req.headers.authorization);
-  if (!credentials || credentials.login !== "admin" || credentials.password !== "qwerty") {
+  if (!credentials || credentials.login !== ADMIN_LOGIN || credentials.password !== ADMIN_PASSWORD) {
     res.sendStatus(401);
     return;
   }
@@ -287,9 +289,9 @@ router.delete("/testing/all-data", (req, res) => {
 });
 
 app.get("/", (req, res) => res.status(200).send("Hello world!"));
+app.get("/health", (req, res) => res.status(200).send({ status: "ok" }));
 app.use("/hometask_03/api", router);
 app.use("/hometask_04/api", router);
-app.use("/api/index.js", router);
 app.use("", router);
 
 module.exports = app;
